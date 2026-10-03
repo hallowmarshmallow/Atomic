@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Atomic</AssemblyName>
+    <RootNamespace>Atomic</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>CS0626;CS0649;CS8632;CS0108</NoWarn>
+
+    <Version>1.0.0</Version>
+    <PackageId>Atomic</PackageId>
+    <Authors>Manu</Authors>
+    <Description>Networking framework for Classic Us (Among Us) BepInEx mods. Provides RPC helpers, lobby mod tracking, and unmodded lobby detection.</Description>
+    <PackageTags>among-us classic-us bepinex mod networking</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <IncludeBuildOutput>true</IncludeBuildOutput>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ClassicUs.GameLibs" Version="2026.9.10.1" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- After a successful build, drop the plugin straight into the game's plugin folder
+       when ClassicUsGameDir is set (e.g. an environment variable or -p:ClassicUsGameDir=...). -->
+  <Target Name="CopyToPlugins" AfterTargets="Build" Condition="'$(ClassicUsGameDir)' != ''">
+    <MakeDir Directories="$(ClassicUsGameDir)/BepInEx/plugins" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFolder="$(ClassicUsGameDir)/BepInEx/plugins" />
+    <Message Importance="high" Text="Copied $(AssemblyName).dll -> $(ClassicUsGameDir)/BepInEx/plugins" />
+  </Target>
+
+</Project>
