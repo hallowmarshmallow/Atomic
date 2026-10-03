@@ -7,6 +7,7 @@ namespace Atomic
         private static int _lastFrame = -1;
         private static int _nextRow;
 
+        // reserves rows and returns the first row number.
         public static int ReserveRows(int menuInstanceId, int count)
         {
             if (Time.frameCount != _lastFrame)
@@ -15,9 +16,9 @@ namespace Atomic
                 _nextRow = 0;
             }
 
-            var start = _nextRow;
+            int firstRow = _nextRow;
             _nextRow += count;
-            return start;
+            return firstRow;
         }
     }
 }

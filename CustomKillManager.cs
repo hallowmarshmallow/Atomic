@@ -17,31 +17,37 @@ namespace Atomic
         private const string RpcRequestKey = "atomic.RequestCustomKill";
         private const string RpcConfirmKey = "atomic.ConfirmCustomKill";
 
-        // How deep one kill may nest inside another.
+        // sets the maximum number of nested kills.
         private const int MaxKillDepth = 2;
 
         private static int _killDepth;
 
-        // Set from [Diagnostics] KillTrace (see AtomicPlugin). Default off.
-        internal static bool TraceEnabled;
-
-        private static void Trace(string message)
-        {
-            if (TraceEnabled) AtomicPlugin.Log.LogInfo("[KillTrace] " + message);
-        }
-
-        // Runs a custom kill. Returns whether a kill actually happened.
+        // tries to kill a player. on the host, true means the kill happened.
+        // on other clients, true means the request was sent.
         public static bool Kill(PlayerControl killer, PlayerControl target, CustomKillOptions options = null)
         {
-            if (killer == null || killer.Data == null || target == null || target.Data == null) return false;
-            if (target.Data.IsDead || target.Data.Disconnected) return false;
+            if (killer == null || killer.Data == null || target == null || target.Data == null)
+            {
+                return false;
+            }
 
-            options ??= new CustomKillOptions();
+            if (target.Data.IsDead || target.Data.Disconnected)
+            {
+                return false;
+            }
 
-            var client = AmongUsClient.Instance;
+            if (options == null)
+            {
+                options = new CustomKillOptions();
+            }
+
+            AmongUsClient client = AmongUsClient.Instance;
             if (client != null && client.AmHost)
             {
-                if (!PerformKill(killer, target, options)) return false;
+                if (!PerformKill(killer, target, options))
+                {
+                    return false;
+                }
 
                 AtomicAPI.SendRpcMethod(RpcConfirmKey, killer.Data.PlayerId, target.Data.PlayerId,
                     options.CreateDeadBody, options.TeleportKiller, options.PlayKillSound, options.ShowKillAnimation);
@@ -53,15 +59,22 @@ namespace Atomic
             return true;
         }
 
+        // handles a kill request sent to the host.
         [AtomicRpc(RpcRequestKey)]
         private static void OnRequestCustomKill(byte senderId, byte killerId, byte targetId, bool createDeadBody, bool teleportKiller, bool playKillSound, bool showKillAnimation)
         {
-            var client = AmongUsClient.Instance;
-            if (client == null || !client.AmHost) return;
+            AmongUsClient client = AmongUsClient.Instance;
+            if (client == null || !client.AmHost)
+            {
+                return;
+            }
 
-            var killer = FindPlayer(killerId);
-            var target = FindPlayer(targetId);
-            if (killer == null || target == null || target.Data == null || target.Data.IsDead || target.Data.Disconnected) return;
+            PlayerControl killer = FindPlayer(killerId);
+            PlayerControl target = FindPlayer(targetId);
+            if (killer == null || target == null || target.Data == null || target.Data.IsDead || target.Data.Disconnected)
+            {
+                return;
+            }
 
             var options = new CustomKillOptions
             {
@@ -71,20 +84,31 @@ namespace Atomic
                 ShowKillAnimation = showKillAnimation,
             };
 
-            // Only echo a kill the local gate let through; see the remarks on Kill.
-            if (!PerformKill(killer, target, options)) return;
+            // confirms the kill only if the host allows it.
+            if (!PerformKill(killer, target, options))
+            {
+                return;
+            }
+
             AtomicAPI.SendRpcMethod(RpcConfirmKey, killerId, targetId, createDeadBody, teleportKiller, playKillSound, showKillAnimation);
         }
 
+        // performs a kill confirmed by the host.
         [AtomicRpc(RpcConfirmKey)]
         private static void OnConfirmCustomKill(byte senderId, byte killerId, byte targetId, bool createDeadBody, bool teleportKiller, bool playKillSound, bool showKillAnimation)
         {
-            var client = AmongUsClient.Instance;
-            if (client != null && client.AmHost) return;
+            AmongUsClient client = AmongUsClient.Instance;
+            if (client != null && client.AmHost)
+            {
+                return;
+            }
 
-            var killer = FindPlayer(killerId);
-            var target = FindPlayer(targetId);
-            if (killer == null || target == null || target.Data == null || target.Data.IsDead) return;
+            PlayerControl killer = FindPlayer(killerId);
+            PlayerControl target = FindPlayer(targetId);
+            if (killer == null || target == null || target.Data == null || target.Data.IsDead)
+            {
+                return;
+            }
 
             PerformKill(killer, target, new CustomKillOptions
             {
@@ -95,21 +119,18 @@ namespace Atomic
             });
         }
 
-        // Performs the kill and reports whether it happened. False means a guard stopped it, a
-        // dead target, the BeforeMurder gate (the Medic shield), or a kill nested too deep, and
-        // the caller must not tell anyone a kill occurred.
+        // kills the target if they are still alive.
         private static bool PerformKill(PlayerControl killer, PlayerControl target, CustomKillOptions options)
         {
-            if (target == null || target.Data == null || target.Data.IsDead) return false;
+            if (target == null || target.Data == null || target.Data.IsDead)
+            {
+                return false;
+            }
 
-            // A subscriber to the murder gate that kills through the same gate
-            // re-enters this method; uncapped that recursion never returns (see
-            // MaxKillDepth).
+            // stops too many nested kills to prevent a loop.
             if (_killDepth >= MaxKillDepth)
             {
-                AtomicPlugin.Log.LogError("CustomKillManager.PerformKill: kill depth " + _killDepth +
-                    " exceeded; blocking nested kill of player " + target.Data.PlayerId +
-                    " (a BeforeMurder subscriber is killing through the kill event).");
+                AtomicPlugin.Log.LogError("CustomKillManager.PerformKill: kill depth " + _killDepth + " exceeded; blocking loop" + target.Data.PlayerId);
                 return false;
             }
 
@@ -124,19 +145,15 @@ namespace Atomic
             }
         }
 
+        // checks kill rules, then carries out the kill.
         private static bool PerformKillCore(PlayerControl killer, PlayerControl target, CustomKillOptions options)
         {
-            // The vanilla murder pipeline runs its guards here (the Medic shield among them),
-            // so a custom kill that skipped MurderPlayer would skip them too. This raises the
-            // event the MurderPlayer patch raises, so a subscriber sees one path either way and a
-            // cancelled event cancels this kill. Raised by reflection: Atomic cannot reference
-            // MarshAPI.
+            // runs the usual kill checks, including the medic shield, so other mods can block this kill.
+            // reflection avoids a dependency cycle with MarshAPI.
             try
             {
-                Trace("gate killer=" + killer.Data.PlayerId + " target=" + target.Data.PlayerId);
                 if (!RaiseMurderEvent("RaiseBeforeMurder", killer, target))
                 {
-                    Trace("cancelled by the BeforeMurder gate");
                     return false;
                 }
             }
@@ -145,12 +162,9 @@ namespace Atomic
                 AtomicPlugin.Log.LogError("CustomKillManager.BeforeMurder gate failed: " + e);
             }
 
-            // A gate subscriber may have killed the target itself (Lovers' heartbreak
-            // fires through this same path the frame a lover dies). Proceeding would
-            // double-kill a player whose Data already says dead.
+            // an event handler may have already killed the target, so check again before continuing.
             if (target == null || target.Data == null || target.Data.IsDead || target.Data.Disconnected)
             {
-                Trace("skip: target died inside the BeforeMurder gate");
                 return false;
             }
 
@@ -158,35 +172,40 @@ namespace Atomic
             {
                 if (options.CreateDeadBody)
                 {
-                    Trace("dead body");
                     SpawnDeadBody(killer, target);
                 }
 
-                if (options.PlayKillSound && killer.AmOwner && killer.KillSfx != null)
+                if (options.PlayKillSound)
                 {
-                    Trace("kill sound");
-                    SoundManager.Instance?.PlaySound(killer.KillSfx, false, 0.8f);
+                    if (killer.AmOwner && killer.KillSfx != null)
+                    {
+                        SoundManager.Instance?.PlaySound(killer.KillSfx, false, 0.8f);
+                    }
                 }
 
-                if (options.ShowKillAnimation && target.AmOwner)
+                if (options.ShowKillAnimation)
                 {
-                    Trace("kill overlay");
-                    try { HudManager.Instance?.KillOverlay?.ShowKillAnimation(killer.Data, target.Data); }
-                    catch (Exception e) { AtomicPlugin.Log.LogError("CustomKillManager.ShowKillAnimation failed: " + e); }
+                    if (target.AmOwner)
+                    {
+                        try
+                        {
+                            HudManager.Instance?.KillOverlay?.ShowKillAnimation(killer.Data, target.Data);
+                        }
+                        catch (Exception e)
+                        {
+                            AtomicPlugin.Log.LogError("CustomKillManager.ShowKillAnimation failed: " + e);
+                        }
+                    }
                 }
 
-                // Die() ghosts the player itself; this layer write is only a visual
-                // assist, and NameToLayer answers -1 on a build without the layer, 
-                // assigning -1 is a native error, not a no-op.
+                // sets the ghost layer only if it exists; -1 is not a valid layer.
                 int ghostLayer = LayerMask.NameToLayer("Ghost");
                 if (ghostLayer >= 0) target.gameObject.layer = ghostLayer;
 
-                Trace("Die");
                 target.Die(DeathReason.Kill, killer);
 
                 try
                 {
-                    Trace("after-murder event");
                     RaiseMurderEvent("RaiseAfterMurder", killer, target);
                 }
                 catch (Exception e)
@@ -196,7 +215,6 @@ namespace Atomic
 
                 if (options.TeleportKiller)
                 {
-                    Trace("teleport killer");
                     Vector2 pos = target.GetTruePosition();
                     if (killer.NetTransform != null)
                     {
@@ -208,8 +226,6 @@ namespace Atomic
                         killer.transform.position = new Vector3(pos.x, pos.y, killer.transform.position.z);
                     }
                 }
-
-                Trace("done");
             }
             catch (Exception e)
             {
@@ -220,14 +236,19 @@ namespace Atomic
             return true;
         }
 
+        // creates a dead body at the target's position.
         private static void SpawnDeadBody(PlayerControl killer, PlayerControl target)
         {
             KillAnimation anim = null;
             if (killer.KillAnimations != null)
             {
-                foreach (var candidate in killer.KillAnimations)
+                foreach (KillAnimation candidate in killer.KillAnimations)
                 {
-                    if (candidate == null || candidate.bodyPrefab == null) continue;
+                    if (candidate == null || candidate.bodyPrefab == null)
+                    {
+                        continue;
+                    }
+
                     anim = candidate;
                     break;
                 }
@@ -235,7 +256,7 @@ namespace Atomic
 
             if (anim == null)
             {
-                AtomicPlugin.Log.LogWarning("CustomKillManager.SpawnDeadBody: no KillAnimation with a bodyPrefab found on killer.KillAnimations, skipping dead body.");
+                AtomicPlugin.Log.LogWarning("CustomKillManager.SpawnDeadBody: no KillAnimation with a bodyPrefab found on killer.KillAnimations, skipping dead body");
                 return;
             }
 
@@ -244,8 +265,14 @@ namespace Atomic
 
             if (body.MyRend != null)
             {
-                try { target.SetPlayerMaterialColors(body.MyRend); }
-                catch (Exception e) { AtomicPlugin.Log.LogError("CustomKillManager.SpawnDeadBody color failed: " + e); }
+                try
+                {
+                    target.SetPlayerMaterialColors(body.MyRend);
+                }
+                catch (Exception e)
+                {
+                    AtomicPlugin.Log.LogError("CustomKillManager.SpawnDeadBody color failed: " + e);
+                }
             }
 
             Vector3 pos = target.transform.position + anim.BodyOffset;
@@ -253,27 +280,47 @@ namespace Atomic
             body.transform.position = pos;
         }
 
-        // Calls MarshAPI.GameEvents' internal murder raisers by name. Reflection because this
-        // assembly sits underneath MarshAPI in the project graph; a direct call would be a
-        // cycle.
+        // calls MarshAPI's murder event by name to avoid a dependency cycle.
         private static bool RaiseMurderEvent(string raiser, PlayerControl killer, PlayerControl target)
         {
-            var events = System.Type.GetType("MarshAPI.GameEvents, MarshAPI");
-            if (events == null) return true; // API absent: nothing to cancel through
+            Type events = System.Type.GetType("MarshAPI.GameEvents, MarshAPI");
+            if (events == null)
+            {
+                return true;
+            }
 
-            var method = events.GetMethod(raiser,
+            System.Reflection.MethodInfo method = events.GetMethod(raiser,
                 System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
-            if (method == null) return true;
+            if (method == null)
+            {
+                return true;
+            }
 
-            var cancelledObj = method.Invoke(null, new object[] { killer, target });
-            return cancelledObj is bool cancelled ? cancelled : true;
+            object cancelledResult = method.Invoke(null, new object[] { killer, target });
+            if (cancelledResult is bool cancelled)
+            {
+                return cancelled;
+            }
+
+            return true;
         }
 
+        // finds a player by their id.
         private static PlayerControl FindPlayer(byte playerId)
         {
-            foreach (var p in PlayerControl.AllPlayerControls)
-                if (p != null && p.Data != null && p.Data.PlayerId == playerId)
-                    return p;
+            foreach (PlayerControl player in PlayerControl.AllPlayerControls)
+            {
+                if (player == null || player.Data == null)
+                {
+                    continue;
+                }
+
+                if (player.Data.PlayerId == playerId)
+                {
+                    return player;
+                }
+            }
+
             return null;
         }
     }

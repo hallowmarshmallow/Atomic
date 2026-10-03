@@ -26,6 +26,8 @@ bool ok = AtomicAPI.IsCompatibleToPlay();
 List<byte> unmodded = AtomicAPI.GetUnmoddedPlayers();
 ```
 
+Use `AtomicAPI.AddVersionLine(versionText, "YourMod.Version", "Your Mod 1.0.0", Color.cyan)` to add a colored line below the game's version text. Pass a `TMP_Text` object. The same name can be used again safely; it will not add the line twice to that text object.
+
 ## Config (`BepInEx/config/atomic.cfg`)
 
 - `Handshake.EnforceCompatibility` (`false` by default) — when `true`, the host

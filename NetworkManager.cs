@@ -12,94 +12,163 @@ namespace Atomic
 
         private static readonly Dictionary<byte, Action<byte, MessageReader>> _handlers = new();
 
-        public static void RegisterHandler(byte callId, Action<byte, MessageReader> handler) => _handlers[callId] = handler;
+        // saves the function that handles this rpc id.
+        public static void RegisterHandler(byte callId, Action<byte, MessageReader> handler)
+        {
+            _handlers[callId] = handler;
+        }
 
+        // handles an incoming rpc message if Atomic owns its id.
         public static bool TryDispatch(PlayerControl sender, byte callId, MessageReader reader)
         {
             AtomicRpc.EnsureFlushed();
-            if (sender == null || sender.Data == null) return false;
+            if (sender == null)
+            {
+                return false;
+            }
+
+            if (sender.Data == null)
+            {
+                return false;
+            }
+
+            byte senderId = sender.Data.PlayerId;
 
             if (callId == RpcHandshake)
             {
-                HandleHandshake(sender.Data.PlayerId, reader);
+                HandleHandshake(senderId, reader);
                 return true;
             }
 
-            if (!_handlers.TryGetValue(callId, out var handler)) return false;
-            handler(sender.Data.PlayerId, reader);
+            Action<byte, MessageReader> handler;
+            if (!_handlers.TryGetValue(callId, out handler))
+            {
+                return false;
+            }
+
+            handler(senderId, reader);
             return true;
         }
 
+        // sends an rpc message to the lobby.
         public static void SendRpc(byte callId, Action<MessageWriter> writePayload)
         {
-            var client = AmongUsClient.Instance;
-            var local = PlayerControl.LocalPlayer;
-            if (client == null || local == null) return;
+            AmongUsClient client = AmongUsClient.Instance;
+            PlayerControl localPlayer = PlayerControl.LocalPlayer;
+
+            if (client == null || localPlayer == null)
+            {
+                return;
+            }
 
             try
             {
-                var writer = client.StartRpcImmediately(local.NetId, callId, SendOption.Reliable, -1);
-                writePayload?.Invoke(writer);
+                MessageWriter writer = client.StartRpcImmediately(
+                    localPlayer.NetId, callId, SendOption.Reliable, -1);
+
+                if (writePayload != null)
+                {
+                    writePayload(writer);
+                }
+
                 client.FinishRpcImmediately(writer);
             }
-            catch (Exception e) { AtomicPlugin.Log.LogError("SendRpc failed: " + e); }
+            catch (Exception e)
+            {
+                AtomicPlugin.Log.LogError("SendRpc failed: " + e);
+            }
         }
 
+        // sends this client's mod list to the lobby.
         public static void SendHandshake()
         {
-            var client = AmongUsClient.Instance;
-            var local = PlayerControl.LocalPlayer;
-            if (client == null || local == null || local.Data == null) return;
+            AmongUsClient client = AmongUsClient.Instance;
+            PlayerControl localPlayer = PlayerControl.LocalPlayer;
 
-            var mods = new List<(string mod, string version)>(AtomicAPI.GetLocalMods());
-            LobbyTracker.SetPlayerMods(local.Data.PlayerId, mods);
+            if (client == null || localPlayer == null || localPlayer.Data == null)
+            {
+                return;
+            }
+
+            List<(string mod, string version)> mods = new List<(string mod, string version)>(
+                AtomicAPI.GetLocalMods());
+            LobbyTracker.SetPlayerMods(localPlayer.Data.PlayerId, mods);
 
             try
             {
-                var writer = client.StartRpcImmediately(local.NetId, RpcHandshake, SendOption.Reliable, -1);
+                MessageWriter writer = client.StartRpcImmediately(
+                    localPlayer.NetId, RpcHandshake, SendOption.Reliable, -1);
                 writer.Write(HandshakeProtocolVersion);
                 writer.Write(AtomicPlugin.Version);
                 writer.Write((byte)mods.Count);
-                foreach (var (mod, version) in mods)
+
+                foreach (var modInfo in mods)
                 {
-                    writer.Write(mod);
-                    writer.Write(version);
+                    writer.Write(modInfo.mod);
+                    writer.Write(modInfo.version);
                 }
+
                 client.FinishRpcImmediately(writer);
                 AtomicPlugin.Log.LogDebug($"Handshake sent: protocol={HandshakeProtocolVersion}, mods={mods.Count}.");
             }
-            catch (Exception e) { AtomicPlugin.Log.LogError("SendHandshake failed: " + e); }
+            catch (Exception e)
+            {
+                AtomicPlugin.Log.LogError("SendHandshake failed: " + e);
+            }
         }
 
+        // reads and checks another player's mod list.
         public static void HandleHandshake(byte senderId, MessageReader reader)
         {
             try
             {
-                byte protocol = reader.ReadByte();
-                string atomicVersion = reader.ReadString();
-                byte count = reader.ReadByte();
-                if (count > MaxAdvertisedMods) throw new InvalidOperationException($"invalid mod count {count}");
+                byte protocolVersion = reader.ReadByte();
+                string remoteAtomicVersion = reader.ReadString();
+                byte modCount = reader.ReadByte();
 
-                var mods = new List<(string mod, string version)>(count);
-                var names = new HashSet<string>(StringComparer.Ordinal);
-                for (int i = 0; i < count; i++)
+                if (modCount > MaxAdvertisedMods)
                 {
-                    string mod = reader.ReadString();
-                    string version = reader.ReadString();
-                    if (string.IsNullOrWhiteSpace(mod) || string.IsNullOrWhiteSpace(version) || !names.Add(mod))
+                    throw new InvalidOperationException($"invalid mod count {modCount}");
+                }
+
+                var mods = new List<(string mod, string version)>(modCount);
+                var names = new HashSet<string>(StringComparer.Ordinal);
+                for (int i = 0; i < modCount; i++)
+                {
+                    string modName = reader.ReadString();
+                    string modVersion = reader.ReadString();
+
+                    if (string.IsNullOrWhiteSpace(modName) || string.IsNullOrWhiteSpace(modVersion))
+                    {
                         throw new InvalidOperationException("invalid or duplicate mod entry");
-                    mods.Add((mod, version));
+                    }
+
+                    if (!names.Add(modName))
+                    {
+                        throw new InvalidOperationException("invalid or duplicate mod entry");
+                    }
+
+                    mods.Add((modName, modVersion));
                 }
 
                 LobbyTracker.SetPlayerMods(senderId, mods);
                 AtomicAPI.FirePlayerModded(senderId, mods);
 
-                bool compatible = protocol == HandshakeProtocolVersion && atomicVersion == AtomicPlugin.Version &&
-                                  LobbyTracker.HasExactModSet(mods, AtomicAPI.GetLocalMods());
-                KickTracker.ConfirmHandshake(senderId, compatible,
-                    compatible ? null : $"protocol={protocol}, Atomic={atomicVersion}, mod set mismatch");
+                bool protocolMatches = protocolVersion == HandshakeProtocolVersion;
+                bool atomicVersionMatches = remoteAtomicVersion == AtomicPlugin.Version;
+                bool modListMatches = LobbyTracker.HasExactModSet(mods, AtomicAPI.GetLocalMods());
+                bool compatible = protocolMatches && atomicVersionMatches && modListMatches;
 
-                AtomicPlugin.Log.LogInfo($"Handshake from player {senderId}: protocol={protocol}, Atomic={atomicVersion}, mods={mods.Count}, compatible={compatible}.");
+                string reason = null;
+                if (!compatible)
+                {
+                    reason = $"protocol={protocolVersion}, Atomic={remoteAtomicVersion}, mod set mismatch";
+                }
+
+                KickTracker.ConfirmHandshake(senderId, compatible, reason);
+
+                AtomicPlugin.Log.LogInfo(
+                    $"Handshake from player {senderId}: protocol={protocolVersion}, Atomic={remoteAtomicVersion}, mods={mods.Count}, compatible={compatible}.");
             }
             catch (Exception e)
             {

@@ -8,38 +8,64 @@ namespace Atomic
         private const float HandshakeTimeoutSeconds = 7f;
         private static readonly Dictionary<int, float> _pendingClients = new();
 
+        // starts waiting for a joining client to send its handshake.
         public static void TrackJoin(int clientId)
         {
-            var client = AmongUsClient.Instance;
-            if (client == null || !client.AmHost || clientId == client.ClientId) return;
+            AmongUsClient client = AmongUsClient.Instance;
+            if (client == null || !client.AmHost || clientId == client.ClientId)
+            {
+                return;
+            }
+
             _pendingClients[clientId] = Time.time + HandshakeTimeoutSeconds;
             AtomicPlugin.Log.LogInfo($"[Handshake] Waiting for client {clientId}.");
         }
 
-        public static void Untrack(int clientId) => _pendingClients.Remove(clientId);
+        // stops waiting for this client.
+        public static void Untrack(int clientId)
+        {
+            _pendingClients.Remove(clientId);
+        }
 
+        // stops waiting and kicks the client if its mod list is incompatible.
         public static void ConfirmHandshake(byte playerId, bool compatible, string reason)
         {
-            var client = AmongUsClient.Instance;
-            if (client == null || !client.AmHost) return;
+            AmongUsClient client = AmongUsClient.Instance;
+            if (client == null || !client.AmHost)
+            {
+                return;
+            }
 
             int? clientId = FindClientId(playerId);
-            if (!clientId.HasValue) return;
+            if (!clientId.HasValue)
+            {
+                return;
+            }
+
             _pendingClients.Remove(clientId.Value);
             if (!compatible && ShouldKick())
                 Kick(clientId.Value, $"incompatible client ({reason})");
         }
 
+        // checks whether any clients have taken too long to send a handshake.
         public static void CheckPending()
         {
-            var client = AmongUsClient.Instance;
-            if (client == null || !client.AmHost || _pendingClients.Count == 0) return;
+            AmongUsClient client = AmongUsClient.Instance;
+            if (client == null || !client.AmHost || _pendingClients.Count == 0)
+            {
+                return;
+            }
 
-            var expired = new List<int>();
+            List<int> expiredClients = new List<int>();
             foreach (var pair in _pendingClients)
-                if (Time.time >= pair.Value) expired.Add(pair.Key);
+            {
+                if (Time.time >= pair.Value)
+                {
+                    expiredClients.Add(pair.Key);
+                }
+            }
 
-            foreach (var clientId in expired)
+            foreach (int clientId in expiredClients)
             {
                 _pendingClients.Remove(clientId);
                 if (ShouldKick())
@@ -49,27 +75,55 @@ namespace Atomic
             }
         }
 
-        public static void Clear() => _pendingClients.Clear();
+        // stops waiting for every client.
+        public static void Clear()
+        {
+            _pendingClients.Clear();
+        }
 
+        // finds the client that owns this player id.
         private static int? FindClientId(byte playerId)
         {
-            foreach (var player in PlayerControl.AllPlayerControls)
-                if (player != null && player.Data != null && player.Data.PlayerId == playerId)
+            foreach (PlayerControl player in PlayerControl.AllPlayerControls)
+            {
+                if (player == null || player.Data == null)
+                {
+                    continue;
+                }
+
+                if (player.Data.PlayerId == playerId)
+                {
                     return player.OwnerId;
+                }
+            }
+
             return null;
         }
 
-        private static bool ShouldKick() =>
-            AtomicPlugin.EnforceCompatibility?.Value == true;
+        // checks whether compatibility enforcement is turned on.
+        private static bool ShouldKick()
+        {
+            return AtomicPlugin.EnforceCompatibility?.Value == true;
+        }
 
+        // removes a client from the lobby.
         private static void Kick(int clientId, string reason)
         {
-            var client = AmongUsClient.Instance;
-            if (client == null || !client.AmHost || clientId == client.ClientId) return;
+            AmongUsClient client = AmongUsClient.Instance;
+            if (client == null || !client.AmHost || clientId == client.ClientId)
+            {
+                return;
+            }
 
             AtomicPlugin.Log.LogWarning($"[Handshake] Kicking client {clientId}: {reason}.");
-            try { client.KickPlayer(clientId, false); }
-            catch (System.Exception e) { AtomicPlugin.Log.LogError($"[Handshake] Kick failed for client {clientId}: {e}"); }
+            try
+            {
+                client.KickPlayer(clientId, false);
+            }
+            catch (System.Exception e)
+            {
+                AtomicPlugin.Log.LogError($"[Handshake] Kick failed for client {clientId}: {e}");
+            }
         }
     }
 }
